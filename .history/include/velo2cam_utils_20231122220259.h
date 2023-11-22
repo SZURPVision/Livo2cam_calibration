@@ -38,32 +38,27 @@
 
 using namespace std;
 
-namespace Livox {
+namespace Velodyne {
 struct Point {
   PCL_ADD_POINT4D;     // quad-word XYZ
   float intensity;     ///< laser intensity reading
-  float ring;  ///< laser ring number
+  std::uint16_t ring;  ///< laser ring number
   float range;
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW  // ensure proper alignment
 } EIGEN_ALIGN16;
 
-void addRange(pcl::PointCloud<Livox::Point> &pc) {
+void addRange(pcl::PointCloud<Velodyne::Point> &pc) {
   for (pcl::PointCloud<Point>::iterator pt = pc.points.begin();
        pt < pc.points.end(); pt++) {
     pt->range = sqrt(pt->x * pt->x + pt->y * pt->y + pt->z * pt->z);
-    float theta = (atan2(pt->z,sqrt((pt->x)*(pt->x)+(pt->y)*(pt->y))))/M_PI *180;
-    // std::cout << "theta:"<<theta<<std::endl;
-    // ROS_INFO("range:%f\n",pt->range);
-    pt->ring = floor(theta)+100;
   }
 }
 
-vector<vector<Point *>> getRings(pcl::PointCloud<Livox::Point> &pc,
+vector<vector<Point *>> getRings(pcl::PointCloud<Velodyne::Point> &pc,
                                  int rings_count) {
-  vector<vector<Point *>> rings(1000);
+  vector<vector<Point *>> rings(rings_count);
   for (pcl::PointCloud<Point>::iterator pt = pc.points.begin();
        pt < pc.points.end(); pt++) {
-    // std::cout << "ring:"<<pt->ring<<std::endl;
     rings[pt->ring].push_back(&(*pt));
   }
   return rings;
@@ -89,10 +84,10 @@ void normalizeIntensity(pcl::PointCloud<Point> &pc, float minv, float maxv) {
 }
 }  // namespace Velodyne
 
-POINT_CLOUD_REGISTER_POINT_STRUCT(Livox::Point,
+POINT_CLOUD_REGISTER_POINT_STRUCT(Velodyne::Point,
                                   (float, x, x)(float, y, y)(float, z, z)(
                                       float, intensity,
-                                      intensity)(float, ring,
+                                      intensity)(std::uint16_t, ring,
                                                  ring)(float, range, range));
 
 void sortPatternCenters(pcl::PointCloud<pcl::PointXYZ>::Ptr pc,

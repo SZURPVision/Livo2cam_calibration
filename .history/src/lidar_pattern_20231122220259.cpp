@@ -71,41 +71,32 @@ std::ofstream savefile;
 
 bool WARMUP_DONE = false;
 
-
 void callback(const PointCloud2::ConstPtr &laser_cloud) {
   if (DEBUG) ROS_INFO("[LiDAR] Processing cloud...");
-  pcl::PointCloud<Livox::Point>::Ptr livoxCLoud(
-      new pcl::PointCloud<Livox::Point>),
-      livox_filtered(new pcl::PointCloud<Livox::Point>),
-      pattern_cloud(new pcl::PointCloud<Livox::Point>),
-      edges_cloud(new pcl::PointCloud<Livox::Point>);
 
-  // pcl::PointCloud<Velodyne::Point>::Ptr velocloud(
-  //     new pcl::PointCloud<Velodyne::Point>),
-  //     velo_filtered(new pcl::PointCloud<Velodyne::Point>),
-  //     pattern_cloud(new pcl::PointCloud<Velodyne::Point>),
-  //     edges_cloud(new pcl::PointCloud<Velodyne::Point>);
+  pcl::PointCloud<Velodyne::Point>::Ptr velocloud(
+      new pcl::PointCloud<Velodyne::Point>),
+      velo_filtered(new pcl::PointCloud<Velodyne::Point>),
+      pattern_cloud(new pcl::PointCloud<Velodyne::Point>),
+      edges_cloud(new pcl::PointCloud<Velodyne::Point>);
 
   clouds_proc_++;
 
   // This cloud is already xyz-filtered
-  // fromROSMsg(*laser_cloud, *velocloud);
-  fromROSMsg(*laser_cloud, *livoxCLoud);
-  
-  // std::cout<<"livox_cloud:"<<laser_cloud<<std::endl;
+  fromROSMsg(*laser_cloud, *velocloud);
 
-  
-  Livox::addRange(*livoxCLoud);
+  Velodyne::addRange(*velocloud);
+
   // Range passthrough filter
-  pcl::PassThrough<Livox::Point> pass2;
-  pass2.setInputCloud(livoxCLoud);
+  pcl::PassThrough<Velodyne::Point> pass2;
+  pass2.setInputCloud(velocloud);
   pass2.setFilterFieldName("range");
   pass2.setFilterLimits(passthrough_radius_min_, passthrough_radius_max_);
-  pass2.filter(*livox_filtered);
+  pass2.filter(*velo_filtered);
 
   // Publishing "range_filtered_velo" cloud (segmented plane)
   sensor_msgs::PointCloud2 range_ros;
-  pcl::toROSMsg(*livox_filtered, range_ros);
+  pcl::toROSMsg(*velo_filtered, range_ros);
   range_ros.header = laser_cloud->header;
   range_pub.publish(range_ros);
 
@@ -113,7 +104,7 @@ void callback(const PointCloud2::ConstPtr &laser_cloud) {
   pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients);
   pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
 
-  pcl::SACSegmentation<Livox::Point> plane_segmentation;
+  pcl::SACSegmentation<Velodyne::Point> plane_segmentation;
   plane_segmentation.setModelType(pcl::SACMODEL_PARALLEL_PLANE);
   plane_segmentation.setDistanceThreshold(plane_threshold_);
   plane_segmentation.setMethodType(pcl::SAC_RANSAC);
@@ -121,18 +112,16 @@ void callback(const PointCloud2::ConstPtr &laser_cloud) {
   plane_segmentation.setEpsAngle(angle_threshold_);
   plane_segmentation.setOptimizeCoefficients(true);
   plane_segmentation.setMaxIterations(1000);
-  plane_segmentation.setInputCloud(livox_filtered);
+  plane_segmentation.setInputCloud(velo_filtered);
   plane_segmentation.segment(*inliers, *coefficients);
+
   if (inliers->indices.size() == 0) {
     // Exit 1: plane not found
     ROS_WARN(
         "[LiDAR] Could not estimate a planar model for the given dataset.");
     return;
   }
-  else{
-    // ROS_INFO("Planar size:%d\n",inliers->indices.size());
-  }
-  
+
   // Copy coefficients to proper object for further filtering
   Eigen::VectorXf coefficients_v(4);
   coefficients_v(0) = coefficients->values[0];
@@ -141,19 +130,19 @@ void callback(const PointCloud2::ConstPtr &laser_cloud) {
   coefficients_v(3) = coefficients->values[3];
 
   // Get edges points by range
-  vector<vector<Livox::Point *>> rings =
-      Livox::getRings(*livoxCLoud, rings_count_);
-  for (vector<vector<Livox::Point *>>::iterator ring = rings.begin();
+  vector<vector<Velodyne::Point *>> rings =
+      Velodyne::getRings(*velocloud, rings_count_);
+  for (vector<vector<Velodyne::Point *>>::iterator ring = rings.begin();
        ring < rings.end(); ++ring) {
-    Livox::Point *prev, *succ;
+    Velodyne::Point *prev, *succ;
     if (ring->empty()) continue;
 
     (*ring->begin())->intensity = 0;
     (*(ring->end() - 1))->intensity = 0;
-    for (vector<Livox::Point *>::iterator pt = ring->begin() + 1;
+    for (vector<Velodyne::Point *>::iterator pt = ring->begin() + 1;
          pt < ring->end() - 1; pt++) {
-      Livox::Point *prev = *(pt - 1);
-      Livox::Point *succ = *(pt + 1);
+      Velodyne::Point *prev = *(pt - 1);
+      Velodyne::Point *succ = *(pt + 1);
       (*pt)->intensity =
           max(max(prev->range - (*pt)->range, succ->range - (*pt)->range), 0.f);
     }
@@ -161,9 +150,9 @@ void callback(const PointCloud2::ConstPtr &laser_cloud) {
 
   float THRESHOLD =
       gradient_threshold_;  // 10 cm between the pattern and the background
-  for (pcl::PointCloud<Livox::Point>::iterator pt =
-           livoxCLoud->points.begin();
-       pt < livoxCLoud->points.end(); ++pt) {
+  for (pcl::PointCloud<Velodyne::Point>::iterator pt =
+           velocloud->points.begin();
+       pt < velocloud->points.end(); ++pt) {
     if (pt->intensity > THRESHOLD) {
       edges_cloud->push_back(*pt);
     }
@@ -174,16 +163,13 @@ void callback(const PointCloud2::ConstPtr &laser_cloud) {
     ROS_WARN("[LiDAR] Could not detect pattern edges.");
     return;
   }
-  else{
-    // ROS_INFO("edges size:%d\n",edges_cloud->points.size());
-  }
 
   // Get points belonging to plane in pattern pointcloud
-  pcl::SampleConsensusModelPlane<Livox::Point>::Ptr dit(
-      new pcl::SampleConsensusModelPlane<Livox::Point>(edges_cloud));
+  pcl::SampleConsensusModelPlane<Velodyne::Point>::Ptr dit(
+      new pcl::SampleConsensusModelPlane<Velodyne::Point>(edges_cloud));
   std::vector<int> inliers2;
   dit->selectWithinDistance(coefficients_v, plane_distance_inliers_, inliers2);
-  pcl::copyPointCloud<Livox::Point>(*edges_cloud, inliers2, *pattern_cloud);
+  pcl::copyPointCloud<Velodyne::Point>(*edges_cloud, inliers2, *pattern_cloud);
 
   // Velodyne specific info no longer needed for calibration
   // so standard PointXYZ is used from now on
@@ -195,13 +181,13 @@ void callback(const PointCloud2::ConstPtr &laser_cloud) {
       cloud_f(new pcl::PointCloud<pcl::PointXYZ>),
       centroid_candidates(new pcl::PointCloud<pcl::PointXYZ>);
 
-  vector<vector<Livox::Point *>> rings2 =
-      Livox::getRings(*pattern_cloud, rings_count_);
+  vector<vector<Velodyne::Point *>> rings2 =
+      Velodyne::getRings(*pattern_cloud, rings_count_);
 
   // Conversion from Velodyne::Point to pcl::PointXYZ
-  for (vector<vector<Livox::Point *>>::iterator ring = rings2.begin();
+  for (vector<vector<Velodyne::Point *>>::iterator ring = rings2.begin();
        ring < rings2.end(); ++ring) {
-    for (vector<Livox::Point *>::iterator pt = ring->begin();
+    for (vector<Velodyne::Point *>::iterator pt = ring->begin();
          pt < ring->end(); ++pt) {
       pcl::PointXYZ point;
       point.x = (*pt)->x;
@@ -210,7 +196,6 @@ void callback(const PointCloud2::ConstPtr &laser_cloud) {
       circles_cloud->push_back(point);
     }
   }
-
 
   // Publishing "pattern_circles" cloud (points belonging to the detected plane)
   if (DEBUG) {
